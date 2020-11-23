@@ -1,2 +1,2 @@
-# jsos
+# jfos
 a operating system
