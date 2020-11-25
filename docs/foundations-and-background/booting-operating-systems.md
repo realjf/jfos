@@ -264,6 +264,14 @@ qemu-system-i386 -drive file=/dev/fd0,index=0,if=floppy -no-fd-bootchk
 
 
 #### 快速FD加载方案
+上面的FD在一个事件点引导加载系统镜像一个扇区，对于小系统，工作很正常，但是对于大系统镜像，
+这将慢到难以接收，更希望有一种更快的加载方案。
+引导Linux zImage时，从逻辑上看，理想情况下，只有两个加载操作
+需要，如：
+
+setes(0x9000); nsec=setup+1; getsector(1);
+setes(0x1000); nsec=ksectors; getsector(setup+2);
+
 
 
 
