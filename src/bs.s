@@ -1,6 +1,6 @@
 !============================ bs.s file ================================
-.globl _main,prints,_NSEC                       ! IMPORT from C
-.globl _getc,putc,_readfd,_setes,inces,_error   ! EXPORT to C
+.globl _main,_prints,_NSEC                       ! IMPORT from C
+.globl _getc,_putc,_readfd,_setes,_inces,_error   ! EXPORT to C
     BOOTSEG     = 0x9800    ! booter segment
     OSSEG       = 0x1000    ! jfos kernel segment
     SSP         = 32*1024   ! booter stack size=32KB

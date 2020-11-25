@@ -77,8 +77,8 @@ dd if=booter of=/dev/fd0 bs=512 count=1 conv=notrunc
 以下为引导文件booter的汇编代码，bs.s
 ```assembler
 !============================ bs.s file ================================
-.globl _main,prints,_NSEC                       ! IMPORT from C
-.globl _getc,putc,_readfd,_setes,inces,_error   ! EXPORT to C
+.globl _main,_prints,_NSEC                       ! IMPORT from C
+.globl _getc,_putc,_readfd,_setes,_inces,_error   ! EXPORT to C
     BOOTSEG     = 0x9800    ! booter segment
     OSSEG       = 0x1000    ! jfos kernel segment
     SSP         = 32*1024   ! booter stack size=32KB
@@ -196,9 +196,10 @@ error()函数被用于设置引导期间的任何错误，其打印错误信息�
  FD contains this booter in Sector 0, jfos kernel begins in Sector 1
  In the jfos kernel: word#1=tsize in clicks, word#2=dsize in bytes
 ****************************************************************************/
-
+#include <sys/types.h>
 int tsize, dsize, ksectors, i, NSEC = 1;
 
+readfd(int,int,int);
 int prints(char *s) { while(*s) putc(*s++); }
 
 int getsector(u16 sector)
@@ -230,10 +231,39 @@ main()
 利用Mailman算法，我们可以把一个线性扇区编号转换成CHS
 格式为cyl=sec/36；head=（sec%36）/18；扇区=（sec%36）%18；
 
+![linear-sector](/images/linear-sector-and-chs-addressing.png)
+
 然后在C中的getsector()函数中写入，其将调用readfd()进行磁盘扇区的加载。
 
+```c
+int getsector（int sec）{readfd（sec / 36，（sec％36）/ 18，（sec％36）％18）}
+```
+在C代码中，prints（）函数用于打印消息字符串。它基于
+putc（）汇编中。按照指定，在启动磁盘上，系统内核映像开始
+来自扇区1，其中字1是系统内核的大小（以16字节clicks）
+字2是dsize（以字节为单位）。在引导程序进入main（）之前，扇区0和1
+已经加载到0x9800。在main（）中，程序的数据段为0x9800。
+因此，扇区1的字1和2现在分别位于（偏移）地址 512 + 2和512 + 4。 C代码提取这些值以计算
+要加载的系统内核。它将ES设置为段0x1000，并循环加载系统扇区。加载方案类似于“滑动窗口”的加载方案。
+每次迭代都调用getsector（i）将NSEC扇区从扇区i加载到ES指向的内存段。将NSEC扇区加载到当前段后，它会增加ES
+由NSEC扇区加载下一个NSEC扇区等。由于NSEC = 1，因此
+按单个扇区加载OS映像。更快的加载方案将在后面讨论。
+
+图3.10显示了系统.sector的引导程序显示的引导屏幕。
+其中每个点代表加载磁盘扇区。
+
+可以通过如下命令模拟软盘引导启动
+```shell
+qemu-system-i386 -drive file=/dev/fd0,index=0,if=floppy -no-fd-bootchk
+```
+
+> [qemu-system-i386详细命令](https://manpages.debian.org/stretch/qemu-system-x86/qemu-system-i386.1.en.html)
 
 
+#### 从FD扇区引导系统镜像
+
+
+#### 快速FD加载方案
 
 
 
