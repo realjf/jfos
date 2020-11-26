@@ -176,6 +176,14 @@ CPU从段0x9800中偏移next后继续执行。选择0x9800基于一个简单的�
 put(c)展示一个字符到屏幕上，readfd()，setes()和inces()函数则更多内容，为了加载系统镜像，引导程序必须能加载磁盘扇区
 到内存中. BIOS通过INT13支持磁盘I/O函数，加载参数到cpu寄存器中。
 
+```
+DH=head(0-1), DL=drive(0 for FD drive 0),
+CH=cyl(0-79), CL=sector(1-18)
+AH=2(READ), AL=number of sectors to read
+Memory address: (segment,offset)=(ES,BX)
+return status: carry bit=0 means no error, 1 means error
+```
+
 ![runtime-image-of-booter](../../assets/images/runtime-image-of-booter.png)
 
 readfd(cyl,head,sector)函数调用BIOS INT13中断加载NSEC扇区到内存中，NSEC是全局导入的C代码.
@@ -260,7 +268,107 @@ qemu-system-i386 -drive file=/dev/fd0,index=0,if=floppy -no-fd-bootchk
 > [qemu-system-i386详细命令](https://manpages.debian.org/stretch/qemu-system-x86/qemu-system-i386.1.en.html)
 
 
-#### 从FD扇区引导系统镜像
+#### 从FD扇区引导linux zImage镜像
+
+根据以下步骤，生成linux zImage镜像
+
+- 首先下载linux源码包，解压，然后切换到linux源码根目录下
+- 运行 make ARCH=i386 menuconfig，选择需要的配置（基本选择默认即可），选择生成文件为a.config，然后保存退出。
+- 根目录下已经生成了a.config配置文件，运行make ARCH=i386 zImage 生成一个很小的linux镜像名叫zImage
+
+> linux内核下载地址：[http://ftp.sjtu.edu.cn/sites/ftp.kernel.org/pub/linux/kernel](http://ftp.sjtu.edu.cn/sites/ftp.kernel.org/pub/linux/kernel)
+> 这里建议下载2.4或更早之前的版本，因为linux2.6版本之后不提供软盘引导启动支持了
+
+zImage镜像是一个小于512kb的压缩内核，为了生成很小的linux zImage镜像，我们必须选择一个最小可选项并编译大部分的
+设备驱动模块，否则，内核镜像大小可能超过512KB，这个对于加载到真实模式下的内存在0x10000到0x90000的地址来说太大了，
+那样的话，我们就必须用make bzImage 来生成一个大的linux镜像了，这将要求不同的引导方案。之后我们将会讨论如何加载linux bzImage镜像。
+
+
+BOOT指向软盘引导程序的引导位置，SETUP是创建linux内核环境的建立位置。对于小的zImage镜像，SETUP的扇区数目，n，从4到10不等。
+同样，BOOT扇区页包含了如下引导参数：
+
+```
+byte 497    number of SETUP sectors
+byte 498    root dev flags: nonzero=READONLY
+word 500    Linux kernel size in (16-bit) clicks
+word 504    ram disk information
+word 506    video mode
+word 508    root device=(major,minor) numbers
+```
+大部分的引导参数可以根据rdev功能程序进行吸怪，可以通过linux帮助文档获取等过rdev的信息。
+一个zImage作为linux的可引导FD磁盘，从内核版本2.6开始，linux不在提供FD引导支持了。
+
+这里讨论的仅仅是zImage镜像内核版本在2.4或更早之前的。在引导期间，BIOS加载引导扇区（BOOT）到内存中，
+并执行它，BOOT第一次重定向自己到段0x9000，并跳转到那里开始执行。然后加载SETUP到段0x9020，即
+位于BOOT之上的512字节处。然后加载linux内核到段0x1000。当加载完成时，再跳转到0x90200运行SETUP，即linux内核开始处。
+一个linux zImage内核加载要求是：
+
+- BOOT+SETUP : 0x90000
+- Linux Kernel： 0x10000
+
+linux zImage引导程序实际上完全复制了引导扇区的功能，一个linux zImage引导磁盘根据以下方法创建，
+首先，用dd复写linux zImage镜像到FD的开始第1扇区，如下：
+
+```
+dd if=zImage of=/dev/fd0 bs=512 seek=1 conv=notrunc
+```
+
+然后安装linux 引导程序到0扇区，其结果图如下：
+
+![linux-boot-layout](/images/linux-boot-disk-layout.png)
+
+然后之前的引导程序bc.c将为引导zImage作如下调整。
+首先，在bs.s汇编代码中，只需要修改OSSEG=0x9020，然后在main()函数返回时，
+让其跳转到(0x9020,0)使其执行SETUP。c代码作如下修改：
+
+```c
+/**************************** jfos booter's bc.c file **********************
+ FD contains this booter in Sector 0, jfos kernel begins in Sector 1
+ In the jfos kernel: word#1=tsize in clicks, word#2=dsize in bytes
+****************************************************************************/
+#include <sys/types.h>
+
+int setup, ksectors, i;
+
+readfd(int,int,int);
+int prints(char *s)
+{
+    while (*s)
+        putc(*s++);
+}
+
+int getsector(__u16 sector)
+{
+    readfd(sector / 36, ((sector) % 36) / 18, (((sector) % 36) % 18));
+}
+
+main()
+{
+    prints("booting jfos\n\r");
+    setup = *(char *)(512+497); // number of SETUP sectors
+    ksectors = *(int *)(512+500) >> 5; // number of kernel sectors
+    setes(0x9000);
+    for (i = 1; i <= setup+ksectors+2; i++)
+    {
+        getsector(i);
+        i<= setup ? putc('*') : putc('.');
+        inces();
+        if(i==setup+1)
+            setes(0x1000);
+    }
+    prints("\n\rready to go?");
+    getc();
+}
+
+```
+
+zImage引导程序的引导界面将会有很多点，在linux内核镜像中，root设备将被设置在0x0200，即第一个FD驱动。
+当linux引导启动时，会试着挂载root文件系统到(2,0)。在引导FD不是一个文件系统之前，挂载将会失败，linux内核将会
+显示错误信息，如：Kernel panic: VFS: Unable to mount root fs 02:00, 并停止。为了使linux内核可运行，我们可以
+改变root设备到包含一个linux文件系统的设置。例如，假设我们linux已经被安装在硬盘的2分区，如果我们改变zImage的root设备
+到(3,2)，linux将会成功启动并运行。
+
+
 
 
 #### 快速FD加载方案
