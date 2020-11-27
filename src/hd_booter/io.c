@@ -14,27 +14,60 @@ char *gets(char s[]) // caller must provide REAL memory s[MAXLEN]
     return s;
 }
 
+int prints(char *s)
+{
+    while (*s)
+        putc(*s++);
+}
+
 typedef unsigned char u8;
 typedef unsigned short u16;
 typedef unsigned long u32;
 char *ctable = "0123456789ABCDEF";
-u16 BASE = 10; // for decimal numbers
-int rpu(u16 x)
+
+int rpu(u16 x, u16 BASE)
 {
     char c;
     if(x){
         c = ctable[x%BASE];
-        rpu(x/BASE);
+        rpu(x/BASE, BASE);
         putc(c);
     }
 }
 
 int printu(u16 x)
 {
-    (x==0) ? putc('0') : rpu(x);
+    (x==0) ? putc('0') : rpu(x, 10);
     putc(' ');
 }
 
+int printd(int x){
+	if (x < 0){
+		x = -x;
+		prints("-");
+	}
+	(x==0)? putc('0'):
+	printu(x);
+}
+
+//printl
+int printl(u32 x){
+	(x==0 )? putc('0') : rpu(x,32);
+	putc(' ');
+}
+
+//printx
+int printx(u16 x){
+	prints("0x");
+	(x==0)? putc('0') : rpu(x, 16);
+	putc(' ');
+}
+
+int printX(u32 x){
+	prints("0X");
+	(x==0) ? putc('0') : rpu(x, 32);
+	putc(' ');
+}
 
 int printf(char *fmt, ...) // some C compiler requires the three dots
 {
@@ -57,7 +90,7 @@ int printf(char *fmt, ...) // some C compiler requires the three dots
         case 'u': printu(*ip); break;
         case 'd': printd(*ip); break;
         case 'x': printx(*ip); break;
-        case 'l': printl(*(u32 *) ip++); break;
+        case 'l': printl(*(u32 *)ip++); break;
         case 'X': printX(*(u32 *)ip++); break;
         }
         cp++;
@@ -81,14 +114,5 @@ void put_byte(u8 byte, u16 segment, u16 offset)
     setds(segment); // set DS to segment
     *(u8 *)offset = byte;
     setds(ds); // restore DS
-}
-
-
-int getblk(u32 blk, u16 offset, u16 nblk)
-{
-    dp->nsectors = nblk*SECTORS_PER_BLOCK; // max value=127
-    dp->addr    = offset;
-    dp->sectorLo = blk*SECTORS_PER_BLOCK;
-    diskr();
 }
 
