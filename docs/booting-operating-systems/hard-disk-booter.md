@@ -289,13 +289,100 @@ CHS值仅对于小于8GB的地址有效，对于大于8GB的但小于4G扇区的
 
 
 ### 寻找并加载linux内核并初始化镜像文件
+用于查找Linux bzImage或RAM磁盘映像的步骤基本上是相同的
+和以前一样。主要的区别源于需要遍历大型EXT2/EXT3硬盘上的文件系统
 
+- 在一个硬盘分区里，EXT2/EXT3文件系统的超级块是1024字节偏移位置。一个启动程序必须读取超级块以便获取s_first_data_block,
+s_log_block_size,s_inodes_per_group和s_inode_size的值，其s_log_block_size决定了块大小，而块大小又决定了group__desc_per_block的值，
+inodes_per_block的值等。这些值在遍历文件系统时是需要的
 
+- 一个大的EXT2/EXT3文件系统可能有很多组，组描述器在块的开始（1+s_first_data_block），通常是1，给一个组编号，我们必须找到他的组描述器并
+用它找到组的inodes开始块
 
+- 核心问题是如何转换一个inode编号为一个inode，下面的代码段说明了该算法，相当于应用了Mailman的算法两次
+
+```
+# a. Compute group# and offset# in that group
+group = (ino-1)/inodes_per_group;
+inumber = (ino-1)%inodes_per_group;
+
+# b. find the group's group descriptor
+gdblk = group / desc_per_block; // which block this GD is in
+gdisp = group % desc_per_block; //which GD in that block
+
+# c. Compute inode's block# and offset in that group
+blk=inumber / inodes_per_block; // blk# r.e.to group inode_table
+disp = inumber % inodes_per_block; // inode offset in that block
+
+# d. read group descriptor to get group's inode table start block#
+getblk(1+first_data_block+gdblk, buf, 1); // GD begin block
+gp = (GD*)buf + gdisp; // it's this group desc
+blk += gp->bg_inode_table; // blk is r.e. to group's inode_table
+getblk(blk, buf, 1); // read the disk block containing inode
+INODE *ip =(INODE*)buf + (disp*iratio); // iratio=2 if inode_size=256
+
+```
+当算法结束，INODE *ip 应该指向该文件的inode内存地址
+
+- 加载linux内核和ramdisk镜像到高内存：通过getblk()和cp2himem()，直接加载内核镜像到1MB的高内存。
+这唯一复杂的是当内核镜像不是从块边界开始的时候。例如，如果SETUP扇区的数目是12，那么内核的5个扇区在
+块1，必须先加载到0x100000，然后才能加载其余的块block1，其必须在我们能逐块加载剩余内核之前，被首先加载到0x100000。
+相反，如果SETUP扇区的数目是23，则BOOT和SETUP在前3个块中，内核从块3开始。在这种情况下，我们可以按块加载整个内核，而不必处理
+开始块的分数。虽然硬盘引导程序可以正确地处理这些情况，但它确实是一种痛苦。如果每个bzImage的Linux内核从一个块边界开始将更好了。
+这可以很容易地通过在Linux工具程序中修改几行代码来实现将不同的部件组装成bzImage文件。为什么Linux
+人们除我之外选择不这样做
+
+接下啦，我们考虑加载RAMdisk镜像。Slackware（Slackware Linux）也有初始化HOWTO文件。initrd是一个由Linux使用的小文件系统，
+内核启动时作为临时根文件系统。initrd包含一组最小的目录和可执行文件，如sh、ismod工具和需要的驱动模块。在initrd上运行时，
+Linux内核通常执行一个sh脚本initrc，用于安装所需的驱动程序模块并激活真正的root设备。当真正的root设备准备就绪时，Linux内核将放弃initrd，
+并装载真正的根文件系统以完成两阶段启动过程。
+使用initrd方法的原因如下：在引导过程中，Linux的启动代码只激活一些标准设备，比如FD和IDE/SCSI HD作为可能的root设备。
+其他设备驱动程序要么以后作为模块安装，要么根本不激活。这个即使所有设备驱动程序都内置在Linux内核中，也是正确的。尽管
+可以通过改变内核的启动代码激活所需的root设备，但问题是，有这么多不同的Linux系统配置，哪种设备激活？
+一个显而易见的答案是激活它们。这样的Linux内核应该是巨大的体积和相当慢的启动。例如，在一些Linux发行包中，内核映像大于4mb。
+initrd镜像可以是根据说明量身定制，仅安装所需的驱动模块。这允许一个通用的Linux内核可用于各种Linux系统配置。
+理论上，一般的Linux内核只需要RAM磁盘驱动程序就可以启动。所有其他驱动程序可以作为模块从initrd安装。有很多工具可以创建初始映像。
+Linux中的mkinitrd命令就是一个很好的例子。它创造了一个initrdgz文件以及包含initrd文件系统的initrd树目录。如果根据需要，
+可以修改initrd树以生成新的initrd镜像。旧的initrd.gz镜像是经过压缩的EXT2文件系统，可以解压缩并作为循环文件系统装载。
+更新的initrd镜像是cpio存档文件，它可以被cpio实用程序操纵。假设初始镜像是一个RAM磁盘镜像文件。
+首先，将其重命名为initrd.gz，然后运行gunzip解压。然后运行：
+
+```sh
+mkdir temp; cd temp; # use a temp DIR
+cpio -id < ../initrd # extract initrd contents
+```
+提取内容，在测试之后，修改initrd树里的文件，运行：
+```sh
+find .|cpio -o -H newc | gzip > ../in
+```
+以创建一个新的initrd.gz文件
+
+加载initrd镜像类似于加载内核镜像，只是更简单。对initrd的加载地址没有具体要求，除了最大地址上限为0xFE000000。
+除此限制外，任何合理的装载地址似乎都是有效的，好的。硬盘引导程序将Linux内核加载到1MB，initrd加载到32MB。加载完成后，
+引导程序必须分别在字节偏移量24和28处写入initrd镜像的加载地址和大小。然后跳转到0x9020执行SETUP。
+早期SETUP代码不关心段寄存器设置。在内核2.6中，SETUP程序需要DS=0x9000才能访问BOOT作为数据段的开始。
 
 
 ### linux和jfos硬盘引导程序
+一个完整的硬盘引导程序代码列表在BOOTERS/HD/MBR.ext4/中，引导程序能启动jfos和ramdisk初始化的linux，它也能启动
+windows通过启动链。为了简洁起见，我们仅展示启动linux部分。
 
+```asm
+
+```
+
+```c
+
+```
+
+```c
+
+```
+
+如上算法，步骤8是可选的。步骤9设置root设备，这仅在没有初始化镜像被加载时才需要。对于一个初始化镜像，root设备
+通过初始化镜像决定。步骤（10）是必需的，它告诉SETUP程序
+内核映像由“up-to-date”引导加载程序加载。否则,SETUP代码
+会认为加载的内核映像无效并拒绝启动Linux内核。
 
 ### 启动EXT4分区
 
