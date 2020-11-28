@@ -231,9 +231,17 @@ qemu-system-i386 -drive file=/dev/fd0,index=0,if=floppy -no-fd-bootchk
 
 根据以下步骤，生成linux zImage镜像
 
+需要确认当前系统是否支持i386架构，如：ubuntu下，可以使用
+```sh
+# 是否支持别的架构
+sudo dpkg --print-foreign-architectures
+# 安装i386架构运行库支持
+sudo dpkg --add-architecture i386
+```
+
 - 首先下载linux源码包，解压，然后切换到linux源码根目录下
-- 运行 make ARCH=i386 menuconfig，选择需要的配置（基本选择默认即可），选择生成文件为a.config，然后保存退出。
-- 根目录下已经生成了a.config配置文件，运行make ARCH=i386 zImage 生成一个很小的linux镜像名叫zImage
+- 运行 make ARCH=i386 menuconfig，选择需要的配置（基本选择默认即可），退出后将在根目录下生成文件为.config。
+- 运行make ARCH=i386 zImage 生成一个很小的linux镜像名叫zImage
 
 > linux内核下载地址：[http://ftp.sjtu.edu.cn/sites/ftp.kernel.org/pub/linux/kernel](http://ftp.sjtu.edu.cn/sites/ftp.kernel.org/pub/linux/kernel)
 > 这里建议下载2.4或更早之前的版本，因为linux2.6版本之后不提供软盘引导启动支持了
@@ -339,43 +347,89 @@ setes(0x9000); nsec=setup+1; getsector(1);
 setes(0x1000); nsec=ksectors; getsector(setup+2);
 
 
-不幸的是，由于硬件限制，事情并不是那么简单。首先
-问题是FD驱动器无法跨磁道或圆柱读取。所有软盘驱动器
-支持一次读取18个扇区的完整轨迹。一些BIOS允许读取
-完整的2条履带的FD圆柱体。此处的讨论假定1.44 MB FD
-支持阅读磁柱的驱动器。从FD加载时，扇区不得
-越过任何圆柱边界。例如，从扇区号34（从
-0），则可以读取1或2个扇区，但是尝试读取2个以上的扇区会导致错误。这是因为扇区34和35在圆柱体0中，而扇区36在
-在气缸1中；从扇区35到36越过圆柱边界，驱动硬件不允许这样做。这意味着每次读取操作都可以加载
-最多是36个扇区的完整圆柱体。然后，存在一个臭名昭著的跨64 KB边界问题，该问题表明在加载FD扇区时，实际内存地址
-不能跨越任何64 KB边界。例如，从真实地址0x0FE00，
-如果我们尝试加载2个扇区，则第二个扇区将被加载到实际地址
-0xFE000 + 0x200 = 0x10000，它在0x10000处越过64 KB边界的原因是由于DMA控制器使用18位地址。
+不幸的是，由于硬件限制，事情并不是那么简单。首先问题是FD驱动器无法跨磁道或圆柱读取。
+所有软盘驱动器支持一次读取18个扇区的完整轨迹。一些BIOS允许读取完整的2条履带的FD圆柱体。
+此处的讨论假定1.44 MB FD支持阅读磁柱的驱动器。从FD加载时，扇区不得越过任何圆柱边界。
+例如，从扇区号34（从0开始计算），则可以读取1或2个扇区，但是尝试读取2个以上的扇区会导致错误。
+这是因为扇区34和35在圆柱体0中，而扇区36则在圆柱1中；从扇区35到36需要越过圆柱边界，驱动硬件不允许这样做。
+这意味着每次读取操作都可以加载最多是36个扇区的完整圆柱体。然后，存在一个臭名昭著的跨64 KB边界问题，
+该问题表明在加载FD扇区时，实际内存地址不能跨越任何64 KB边界。例如，从真实地址0x0FE00，如果我们尝试加载2个扇区，
+则第二个扇区将被加载到实际地址0xFE000 + 0x200 = 0x10000，它在0x10000处越过64 KB边界的原因是由于DMA控制器使用18位地址。
 当地址的低16位达到64K时，由于某种原因，DMA控制器不会递增地址的高2位，从而导致低
-16位地址环绕的
-问题。在这种情况下，加载可能仍然会发生，但仅限于
-同一段。在上面的示例中，代替了预期的地址
-0x10000，第二个扇区将被加载到0x00000。这将摧毁
-中断向量，可有效杀死BIOS。因此，FD引导程序必须避免
-加载OS映像时这两个问题。避免这些问题的简单方法
-就像我们到目前为止所做的那样，一个接一个地加载扇区。显然，加载一个扇区
-一次永远不会越过任何圆柱体。如果加载段从扇区边界开始，即段地址可以被0x20整除，则它也不会跨任何
-64 KB边界。同样，如果OS映像从磁盘上的块边界开始
-并且加载段也从内存中的块边界开始，然后也可以加载1 KB块。为了不跨越圆柱和64 KB
-边界，我们最好的办法是一次加载4个扇区。鼓励读者证明这一点。我们可以做得更好吗？答案是肯定的，正如许多人所证明的那样
-已发布的引导加载程序，其中大多数尝试按轨道加载。这里我们提出一个快速
-加载方案，称为“越野”算法，该方案通过汽缸加载。
-该算法类似于越野跑者谈判障碍路线。
-当有空旷的地方时，跑步者会全力以赴（负荷缸）以快速奔跑。
-当前方有障碍物时，跑步者会以较小的步幅减慢速度
-（加载部分气缸），直到清除障碍物。然后跑步者快速恢复
-通过全力以赴，等等。以下C代码显示了Linux zImage
-实施越野算法的引导程序。为了保持引导
-大小在512字节以内，更新ES在getsector（）中完成，并且prints（）函数也被取消。生成的引导程序大小仅为484字节。
+16位地址环绕的问题。在这种情况下，加载可能仍然会发生，但仅限于同一段。在上面的示例中，代替了预期的地址0x10000，
+第二个扇区将被加载到0x00000。这将摧毁中断向量，可有效杀死BIOS。因此，FD引导程序必须避免加载OS镜像时这两个问题。
+避免这些问题的简单方法就像我们到目前为止所做的那样，一个接一个地加载扇区。显然，加载一个扇区
+一次永远不会越过任何圆柱体。如果加载段从扇区边界开始，即段地址可以被0x20整除，则它也不会跨任何64 KB边界。
+同样，如果OS镜像从磁盘上的块边界开始并且加载段也从内存中的块边界开始，然后也可以加载1 KB块。为了不跨越圆柱和64 KB边界，
+我们最好的办法是一次加载4个扇区。鼓励读者证明这一点。我们可以做得更好吗？答案是肯定的，正如许多人已发布的引导加载程序所证明的那样，
+其中大多数尝试按轨道加载。这里我们提出一个快速加载方案，称为“越野”算法，该方案通过圆柱加载。该算法类似于越野跑者谈判障碍路线。
+当有空旷的地方时，跑步者会全力以赴（加载圆柱）以快速奔跑。当前方有障碍物时，跑步者会以较小的步幅减慢速度（加载部分圆柱），直到清除障碍物。
+然后跑步者通过全力以赴快速恢复，等等。以下C代码显示了Linux zImage实施越野算法的引导程序。为了保持引导大小在512字节以内，
+在getsector（）中完成更新ES，并且prints（）函数也被取消。生成的引导程序大小仅为484字节。
 
+```c
+
+#define TRK 18
+#define CYL 36
+typedef unsigned char u8;
+typedef unsigned short u16;
+readfd(int, int, int);
+getes();
+int setup, ksectors, ES;
+int csector = 1; // current loading sector
+int NSEC = 35;   // initial number of sectors to load >= BOOT+SETUP
+int getsector(u16 sector)
+{
+    readfd(sector / CYL, ((sector) % CYL) / TRK, (((sector) % CYL) % TRK));
+    csector += NSEC;
+    inces();
+}
+
+main()
+{
+    setes(0x9000);
+    getsector(1); // load linux's [boot+SETUP] to 0x9000
+    // current sector= SETUP's sector count (at offset 512+497) + 2
+    setup = *(u8 *)(512 + 497) + 2;
+    ksectors = (*(u16 *)(512 + 500)) >> 5;
+    NSEC = CYL - setup; // sectors remain in cylinder 0
+    setes(0x1000);      // linux kernel is loaded to segment 0x1000
+    getsector(setup);   // load the remaining sectors of cylinder 0
+    csector = CYL;      // we are now at begining of cyl#1
+    while (csector < ksectors + setup)
+    {
+        // try to load cylinders
+        ES = getes(); // current ES value
+        if (((ES + CYL * 0x20) & 0xF000) == (ES & 0XF000))
+        {
+            // same segment
+            NSEC = CYL; // load a full cylinder
+            getsector(csector);
+            putc('C'); // show loaded a cylinder
+            continue;
+        }
+        // this cylinder will cross 64KB, compute MAX sectors to load
+        NSEC = 1;
+        while (((ES + NSEC * 0x20) & 0xF000) == (ES & 0xF000))
+        {
+            NSEC++;
+            putc('s'); // number of sectors can still load
+        }
+        getsector(csector); // load partial cylinder
+        NSEC = CYL - NSEC;  // load remaining sectors of cylinder
+        putc('|');          // show cross 64KB
+        getsector(csector); // load remainder of cylinder
+        putc('p');
+    }
+}
+
+```
+
+运行后，引导程序显示里每个C表示加载的一个圆柱，每个s表示加载圆柱的扇区，每个|表示跨越64KB边界，每个p表示正在加载一个圆柱剩余的扇区。
 
 
 #### 从文件系统引导系统镜像
+
 
 #### 从文件系统引导linux zImage镜像
 
