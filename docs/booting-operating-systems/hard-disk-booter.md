@@ -480,7 +480,26 @@ int main()
 ```
 
 ```c
-
+/**************** bootLinux.c file ***************************/
+boot-Linux-bzImage Algorithm:
+{
+    1. read superblock to get blockSize, inodeSize, inodes_per_group
+    2. read group descriptor 0 to get inode start block
+    3. read in the root INODE and let INODE *ip point at root INODE
+    4. prompt for a Linux kernel image filename to boot
+    5. tokenize image filename and search for image's INODE
+    6. handle symbolic-link filenames
+    7. load BOOT+SETUP of Linux bzImage to 0x9000;
+    8. set video dev word at 508 in BOOT to 773(for small font).
+    9. set root dev word at 508 in BOOT to (0x03, pno) (/dev/hdapno)
+    10. set bootflags word at offset 16 in SETUP to 0x2001
+    11. compute number of kernel sectors in last block of SETUP
+    12. load kernel sectors to 0x1000, then cp2himem() to 1MB
+    13. load kernel blocks to high memory, each time load 64kb
+    14. load initrd image to 32MB in high memory
+    15. write initrd address and size to offsets (24,28) in SETUP
+    16. jmp_setup() to execute SETUP code at 0x9020
+}
 ```
 
 如上算法，步骤8是可选的。步骤9设置root设备，这仅在没有初始化镜像被加载时才需要。对于一个初始化镜像，root设备
@@ -489,10 +508,107 @@ int main()
 会认为加载的内核映像无效并拒绝启动Linux内核。
 
 ### 启动EXT4分区
+在写入的时候，许多linux发布版会切换到ext4作为默认文件系统。
+
+这对于修改引导程序从ext4分区引导jfos和linux是非常容易的。这里，我们简短描述ext4文件系统
+和硬盘启动程序需要修改的内容。
+
+- 1. 在ext4中，i_node[15] 数组的一个inode包含了一个头部和4个范围结构，每个12字节长，如下：
+
+```c
+|header|extent1|extent2|extent3|extent4|
+struct ext3_extent_header{
+    u16 eh_magic;   // 0xF30A
+    u16 eh_entries; // number of valid entries
+    u16 eh_max; // capacity of store in entries
+    u16 eh_depth;   // has tree real underlaying blocks?
+    u32 eh_generation; // generation of the tree
+};
+struct ext3_extent{
+    u32 ee_block;   // first logical block extent covers
+    u16 ee_len;     // number of blocks covered by extent
+    u16 ee_start_hi; // high 16 bits of physical block
+    u32 ee_start;   // low 32 bits of physical block
+};
+```
+这个root目录不会使用extents，所以i_block[0]仍然是第一个数据块
+
+- 2. GD和INODE类型是与ext2相同的，但是INODE的大小是256字节。超级块的magic number也是与EXT2相同，
+但是我们可以测试s_feature_incompat(>0x240)来决定是否它是ext4文件系统。
+
+- 3. 每个区段中的块是连续的。加载镜像时不需要扫描连续的块；只需直接加载一系列块。对于硬盘来说，
+块大小为4KB。每次装载的最大块数仍限制为16或更少。下面显示了EXT4文件系统的search()和load()函数。
+将它们集成到hdbooter中作为一个练习
+
+```c
+u32 search(INODE *ip, char *name)
+{
+    u16 i; u32 ino;
+    struct ext3_extent_header *hdp;
+    struct ext3_extent *ep;
+    char buf[BLK];
+    hdp = (struct ext3_extent_header *)&(ip->i_block[0]);
+    ep = (struct ext3_extent*)&(ip->i_block[3]);
+    for(i=0; i<4; i++){
+        if(hdp->eh_entries == 0){
+            getblk((u32)ip->i_block[0], buf, 1);
+            i = 4;
+        }else{
+            ep = (struct ext3_extent *) & (ip->i_block[3]);
+            getblk((u32)ep->ee_start, buf, 1);
+        }
+        if(ino = find(buf, name)) // find name string in buf[]
+            return ino;
+    }
+    return 0;
+}
+
+// load blocks of an INODE with EXT4 extent
+in loadExt4(INODE *ip, u16 startblk)
+{
+    int i, j, k, remain; u32 *up;
+    struct ext3_extent_header *hdp;
+    struct ext3_extent *ep;
+    int ext;
+    u32 fblk, beginblk;
+    hdp = (struct ext3_extent_header *)ip->i_block;
+    ep = (struct ext3_extent*)ip->i_block + 1;
+    ext = 1;
+    while(1){
+        if(ep->ee_len==0)
+        break;
+    }
+    beginblk = 0;
+    if(ext==1)
+        beginblk = startblk;
+    k = 16;
+    fblk = ep->ee_start+beginblk;
+    k = 16;
+    fblk = ep->ee_start + beginblk;
+    remain = ep->ee_len - beginblk;
+    while(remain >= k){
+        getblk((u32)(fblk), 0, k);
+        cp_vm(k, '.');
+        fblk += k;
+        remain -= k;
+    }
+    if(remain){
+        getblk((u32)(fblk), 0, remain);
+        cp_vm(remain, '.');
+    }
+    ext++;
+    ep++; // next extent
+}
+```
 
 
 ### 安装硬盘引导程序
 
+现在我们有了一个硬盘引导程序，那要怎么安装它呢？显然，引导程序的开始部分必须安装在硬盘的MBR，
 
-
+安装到硬盘按如下操作:
+```sh
+dd if=hd-booter of=/dev/hda bs=16 count=27
+dd if=hd-booter of=/dev/hda bs=512 seek=1
+```
 
